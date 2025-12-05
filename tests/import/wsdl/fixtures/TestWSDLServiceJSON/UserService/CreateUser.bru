@@ -1,0 +1,20 @@
+meta {
+  name: CreateUser
+  type: http
+  seq: 2
+}
+
+post {
+  url: http://example.com/soap/userservice
+  body: xml
+  auth: none
+}
+
+headers {
+  Content-Type: text/xml; charset=utf-8
+  SOAPAction: http://example.com/testservice/CreateUser
+}
+
+body:xml {
+  <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body><CreateUserRequest xmlns="http://example.com/testservice"><name>string</name><email>string</email><password>string</password></CreateUserRequest></soap:Body></soap:Envelope>
+}
