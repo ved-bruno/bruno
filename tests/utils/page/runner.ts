@@ -1,4 +1,153 @@
-import { Page, expect } from '../../../playwright';
+import { Locator, Page, expect, test } from '../../../playwright';
+import { buildCommonLocators, buildSandboxLocators } from './locators';
+import { MAX_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH, dragSidebarToWidth, revealFolderRow } from './sidebar';
+
+/**
+ * Builds locators for the runner results view
+ * @param page - The Playwright page object
+ * @returns Object with locators for runner elements
+ */
+export const buildRunnerLocators = (page: Page) => ({
+  allCount: () => page.getByTestId('runner-filter-all-count'),
+  passedCount: () => page.getByTestId('runner-filter-passed-count'),
+  failedCount: () => page.getByTestId('runner-filter-failed-count'),
+  skippedCount: () => page.getByTestId('runner-filter-skipped-count'),
+  resetButton: () => page.getByRole('button', { name: 'Reset' }),
+  runCollectionButton: () => page.getByTestId('runner-run-button'),
+  runAgainButton: () => page.getByRole('button', { name: 'Run Again' }),
+  cancelExecutionButton: () => page.getByTestId('runner-cancel-button'),
+  configPanel: () => page.getByTestId('runner-config-panel'),
+  configCounter: () => page.getByTestId('runner-config-counter'),
+  selectAllButton: () => page.getByTestId('runner-select-all'),
+  configResetButton: () => page.getByTestId('runner-config-reset'),
+  requestItems: () => page.getByTestId('runner-request-item'),
+  delayInput: () => page.getByTestId('runner-delay-input'),
+  resultItems: () => page.getByTestId('runner-result-item'),
+  passedTestRows: () => page.getByTestId('runner-test-row-passed'),
+  failedTestRows: () => page.getByTestId('runner-test-row-failed'),
+  requestLoader: () => page.getByTestId('runner-result-item').locator('.animate-spin'),
+  requestStatusLabel: () => page.getByTestId('runner-iteration-status-label'),
+  resultTimelineEntries: () => page.getByTestId('timeline-entry'),
+  toolbar: () => page.getByTestId('runner-toolbar'),
+  filterButton: (key: RunnerFilterKey) => page.getByTestId(`runner-filter-${key}`),
+  filterSelect: () => page.getByTestId('runner-filter-select'),
+  filterOption: (label: string) => page.getByRole('menuitem', { name: label, exact: true })
+});
+
+export type RunnerFilterKey = 'all' | 'passed' | 'failed' | 'skipped';
+
+export type RunnerToolbarLevel = 'compact' | 'tiny';
+
+const toolbarHasLevel = (page: Page, level: RunnerToolbarLevel) =>
+  buildRunnerLocators(page).toolbar().evaluate((node, level) => node.classList.contains(level), level);
+
+/**
+ * Binary-searches the sidebar's drag range for the narrowest sidebar at which the runner toolbar
+ * collapses to `level`, and leaves the sidebar at that width. The search stops within 6px, so each
+ * probe lands at least 3px from the current width and the sidebar never ignores it.
+ * @param page - The Playwright page object
+ * @param level - The collapse level to search for
+ * @returns The sidebar width at which the toolbar first collapses to `level`
+ */
+export const findToolbarCollapseSidebarWidth = async (page: Page, level: RunnerToolbarLevel) => {
+  return await test.step(`Find the narrowest sidebar at which the runner toolbar is "${level}"`, async () => {
+    let fits = MIN_SIDEBAR_WIDTH;
+    let collapses = MAX_SIDEBAR_WIDTH;
+
+    await dragSidebarToWidth(page, fits);
+    expect(await toolbarHasLevel(page, level), `toolbar is not "${level}" beside a ${fits}px sidebar`).toBe(false);
+    await dragSidebarToWidth(page, collapses);
+    expect(await toolbarHasLevel(page, level), `toolbar is "${level}" beside a ${collapses}px sidebar`).toBe(true);
+
+    while (collapses - fits > 6) {
+      const middle = Math.floor((fits + collapses) / 2);
+      await dragSidebarToWidth(page, middle);
+      if (await toolbarHasLevel(page, level)) {
+        collapses = middle;
+      } else {
+        fits = middle;
+      }
+    }
+
+    await dragSidebarToWidth(page, collapses);
+    return collapses;
+  });
+};
+
+/**
+ * Builds locators for the include/exclude tag filters shared by the runner tab and the sidebar
+ * "Run" modal. Both render the same pair of columns, so `root` picks which copy to address when
+ * the modal overlays the runner tab.
+ * @param page - The Playwright page object
+ * @param root - The container holding the filters (the page, or the modal when it is open)
+ * @returns Object with locators for the tag filter elements
+ */
+export const buildRunnerTagLocators = (page: Page, root?: Locator) => {
+  const scope = root ?? page.locator('body');
+  const column = (kind: RunnerTagKind) => scope.getByTestId(RUNNER_TAG_COLUMN_TEST_IDS[kind]);
+
+  return {
+    column,
+    input: (kind: RunnerTagKind) => column(kind).getByTestId('tag-input').getByRole('textbox'),
+    chip: (kind: RunnerTagKind, tagName: string) => column(kind).locator('.tag-item', { hasText: tagName })
+  };
+};
+
+export type RunnerTagKind = 'Include' | 'Exclude';
+
+const RUNNER_TAG_COLUMN_TEST_IDS: Record<RunnerTagKind, string> = {
+  Include: 'runner-include-tags',
+  Exclude: 'runner-exclude-tags'
+};
+
+/**
+ * Adds a tag to the runner's include or exclude filter and waits for the chip to appear.
+ * @param page - The Playwright page object
+ * @param kind - Which filter to add the tag to
+ * @param tagName - The tag to filter by
+ * @param root - The container holding the filters (the modal, when run from one)
+ * @returns void
+ */
+export const addRunnerTag = async (page: Page, kind: RunnerTagKind, tagName: string, root?: Locator) => {
+  await test.step(`Add "${tagName}" to the runner's ${kind.toLowerCase()} tags`, async () => {
+    const locators = buildRunnerTagLocators(page, root);
+    const input = locators.input(kind);
+    await expect(input).toBeVisible();
+    await input.fill(tagName);
+    await input.press('Enter');
+    await expect(locators.chip(kind, tagName)).toBeVisible();
+  });
+};
+
+/**
+ * Removes every tag from both runner filters. The filters live in collection state, so they
+ * survive across tests that share an app instance — each test starts from a clean filter.
+ * @param page - The Playwright page object
+ * @param root - The container holding the filters (the modal, when run from one)
+ * @returns void
+ */
+export const clearRunnerTags = async (page: Page, root?: Locator) => {
+  await test.step('Clear the runner tag filters', async () => {
+    const locators = buildRunnerTagLocators(page, root);
+    for (const kind of ['Include', 'Exclude'] as RunnerTagKind[]) {
+      const removers = locators.column(kind).locator('.tag-item .tag-remove');
+      // Removing a chip re-renders the list, so re-read it rather than iterating a stale handle.
+      for (let remaining = await removers.count(); remaining > 0; remaining--) {
+        await removers.first().click();
+      }
+      await expect(removers).toHaveCount(0);
+    }
+  });
+};
+
+/**
+ * Locates a row in the runner's "Configure requests to run" list by its exact request name.
+ * @param page - The Playwright page object
+ * @param requestName - The request's name as shown in the row
+ * @returns The row locator
+ */
+export const runnerConfigItem = (page: Page, requestName: string): Locator =>
+  page.getByTestId('runner-request-item').filter({ has: page.getByText(requestName, { exact: true }) });
 
 /**
  * Reads test result counts from the filter buttons in the runner results view
@@ -6,17 +155,71 @@ import { Page, expect } from '../../../playwright';
  * @returns An object with totalRequests, passed, failed, and skipped counts
  */
 export const getRunnerResultCounts = async (page: Page) => {
-  const allButton = page.locator('button').filter({ hasText: /^All/ });
-  const passedButton = page.locator('button').filter({ hasText: /^Passed/ });
-  const failedButton = page.locator('button').filter({ hasText: /^Failed/ });
-  const skippedButton = page.locator('button').filter({ hasText: /^Skipped/ });
+  const locators = buildRunnerLocators(page);
 
-  const totalRequests = parseInt(await allButton.locator('span').innerText());
-  const passed = parseInt(await passedButton.locator('span').innerText());
-  const failed = parseInt(await failedButton.locator('span').innerText());
-  const skipped = parseInt(await skippedButton.locator('span').innerText());
+  const readCount = async (locator: Locator) => parseInt((await locator.textContent()) ?? '');
+
+  const totalRequests = await readCount(locators.allCount());
+  const passed = await readCount(locators.passedCount());
+  const failed = await readCount(locators.failedCount());
+  const skipped = await readCount(locators.skippedCount());
 
   return { totalRequests, passed, failed, skipped };
+};
+
+/**
+ * Opens the runner tab for a collection without starting a run
+ * @param page - The Playwright page object
+ * @param collectionName - The name of the collection to open the runner for
+ * @returns void
+ */
+export const openRunnerTab = async (page: Page, collectionName: string) => {
+  await test.step(`Open runner tab for "${collectionName}"`, async () => {
+    const collectionContainer = page.getByTestId('collections').locator('.collection-name').filter({ hasText: collectionName });
+    await collectionContainer.waitFor({ state: 'visible' });
+
+    // Re-hover on each poll: CSS `:hover` reveals `.collection-actions`, but sidebar
+    // re-renders can shift the row out from under a one-shot hover().
+    const actionsContainer = collectionContainer.locator('.collection-actions');
+    await expect(async () => {
+      await collectionContainer.hover();
+      await expect(actionsContainer).toBeVisible({ timeout: 1000 });
+    }).toPass({ timeout: 10000 });
+
+    const icon = actionsContainer.locator('.icon');
+    await icon.waitFor({ state: 'visible', timeout: 5000 });
+    await icon.click();
+
+    const runMenuItem = page.getByText('Run', { exact: true });
+    await runMenuItem.waitFor({ state: 'visible' });
+    await runMenuItem.click();
+
+    // Wait for the config panel to load
+    const locators = buildRunnerLocators(page);
+    await locators.configPanel().waitFor({ state: 'visible', timeout: 10000 });
+  });
+};
+
+/**
+ * Expands a collection in the sidebar so its items are mounted, then opens its runner tab.
+ *
+ * RunnerTags builds the tag vocabulary it validates against (`collection.allTags`) in a mount
+ * effect keyed only on the collection uid. A collection whose items are still loading therefore
+ * yields an empty vocabulary that never refreshes, and every tag typed into the include/exclude
+ * filters is rejected as "tag does not exist!". Expanding first — what a user does anyway —
+ * guarantees the items are there before the effect runs.
+ * @param page - The Playwright page object
+ * @param collectionName - The collection to open the runner for
+ * @param anyItemName - Any item in the collection, awaited as proof that mounting finished
+ * @returns void
+ */
+export const openRunnerTabWithTagsReady = async (page: Page, collectionName: string, anyItemName: string) => {
+  await test.step(`Mount "${collectionName}" and open its runner tab`, async () => {
+    const locators = buildCommonLocators(page);
+    await locators.sidebar.collection(collectionName).click();
+    await expect(locators.sidebar.itemsIn(collectionName, anyItemName)).toBeVisible();
+    await openRunnerTab(page, collectionName);
+  });
 };
 
 /**
@@ -27,40 +230,164 @@ export const getRunnerResultCounts = async (page: Page) => {
  * @returns void
  */
 export const runCollection = async (page: Page, collectionName: string) => {
-  // Ensure collection is visible and loaded
-  const collectionContainer = page.locator('.collection-name').filter({ hasText: collectionName });
-  await collectionContainer.waitFor({ state: 'visible' });
-  // Wait a bit for the UI to stabilize
-  await page.waitForTimeout(300);
+  await test.step(`Run collection "${collectionName}"`, async () => {
+    // Ensure collection is visible and loaded (scope to sidebar)
+    const collectionContainer = page.getByTestId('collections').locator('.collection-name').filter({ hasText: collectionName });
+    await collectionContainer.waitFor({ state: 'visible' });
 
-  // Open collection actions menu
-  await collectionContainer.locator('.collection-actions').hover();
-  const icon = collectionContainer.locator('.collection-actions .icon');
-  await icon.waitFor({ state: 'visible', timeout: 5000 });
-  await page.waitForTimeout(200); // Small delay to ensure hover state is stable
-  await icon.click();
+    // Open collection actions menu - hover first to reveal the hidden actions button
+    // Re-hover on each poll: CSS `:hover` reveals `.collection-actions`, but sidebar
+    // re-renders can shift the row out from under a one-shot hover().
+    const actionsContainer = collectionContainer.locator('.collection-actions');
+    await expect(async () => {
+      await collectionContainer.hover();
+      await expect(actionsContainer).toBeVisible({ timeout: 1000 });
+    }).toPass({ timeout: 10000 });
 
-  // Click Run menu item
-  await page.getByText('Run', { exact: true }).click();
+    const icon = actionsContainer.locator('.icon');
+    await icon.waitFor({ state: 'visible', timeout: 5000 });
+    await icon.click();
 
-  // Handle runner tab - reset if needed, then run
-  const resetButton = page.getByRole('button', { name: 'Reset' });
-  const runCollectionButton = page.getByRole('button', { name: 'Run Collection' });
+    // Click Run menu item
+    const runMenuItem = page.getByText('Run', { exact: true });
+    await runMenuItem.waitFor({ state: 'visible' });
+    await runMenuItem.click();
 
-  // Check if Reset button is visible (means there are existing results)
-  const resetVisible = await resetButton.isVisible().catch(() => false);
-  if (resetVisible) {
-    await resetButton.click();
-    // Wait a bit for the reset to complete
-    await page.waitForTimeout(500);
+    // Handle runner tab - reset if needed, then run
+    const locators = buildRunnerLocators(page);
+
+    // Check if Reset button is visible (means there are existing results)
+    const resetVisible = await locators.resetButton().isVisible({ timeout: 1000 }).catch(() => false);
+    if (resetVisible) {
+      await locators.resetButton().click();
+      // Wait for the Run Collection button to become visible after reset
+      await locators.runCollectionButton().waitFor({ state: 'visible', timeout: 5000 });
+    }
+
+    // Now wait for and click Run Collection button
+    await locators.runCollectionButton().waitFor({ state: 'visible', timeout: 10000 });
+    await locators.runCollectionButton().click();
+
+    // Wait for the run to complete
+    await locators.runAgainButton().waitFor({ timeout: 2 * 60 * 1000 });
+  });
+};
+
+export const openRunnerResult = async (page: Page, requestName: string) => {
+  await test.step(`Open the "${requestName}" runner result`, async () => {
+    const result = buildRunnerLocators(page).resultItems().filter({ hasText: requestName });
+    await result.first().waitFor({ state: 'visible', timeout: 10000 });
+    await result.locator('.link').first().click();
+  });
+};
+
+export const openRunnerResultTimeline = async (page: Page, requestName: string) => {
+  await test.step(`Open the "${requestName}" runner result on its Timeline tab`, async () => {
+    const locators = buildRunnerLocators(page);
+    await openRunnerResult(page, requestName);
+
+    const timelineTab = page.locator('[role="tab"]').filter({ hasText: 'Timeline' }).last();
+    await timelineTab.click();
+
+    const { timeline } = buildCommonLocators(page);
+    const entry = locators.resultTimelineEntries().first();
+    await entry.waitFor({ state: 'visible', timeout: 10000 });
+    await timeline.itemHeader(entry).click();
+  });
+};
+
+/**
+ * Opens a folder's run modal without starting a run: walks the sidebar to the folder, expanding
+ * the collection and any parent folders on the way, then picks "Run" from its context menu.
+ * The modal reports how many requests each run mode would cover, so a spec can assert the effect
+ * of the tag filters without executing anything.
+ * @param page - The Playwright page object
+ * @param collectionName - The name of the collection containing the folder
+ * @param folderPath - Array of folder names forming the path (e.g. ['scripting', 'api', 'bru', 'cookies'])
+ * @returns The modal locator, to pass to `folderRunButton` / `folderRunCount`
+ */
+export const openFolderRunModal = async (page: Page, collectionName: string, folderPath: string[]): Promise<Locator> => {
+  return await test.step(`Open the run modal for folder "${folderPath.join('/')}" in "${collectionName}"`, async () => {
+    const targetRow = await revealFolderRow(page, collectionName, folderPath);
+
+    // The row's menu icon is revealed by CSS :hover.
+    await targetRow.hover();
+    const menuIcon = targetRow.locator('.menu-icon');
+    await menuIcon.waitFor({ state: 'visible', timeout: 5000 });
+    await menuIcon.click();
+
+    const runMenuItem = page.locator('.dropdown-item').filter({ hasText: 'Run' });
+    await runMenuItem.waitFor({ state: 'visible' });
+    await runMenuItem.click();
+
+    const modal = page.locator('.bruno-modal');
+    await expect(modal).toBeVisible();
+    return modal;
+  });
+};
+
+/**
+ * Locates one of the run buttons in the folder run modal.
+ * @param modal - The run modal, as returned by `openFolderRunModal`
+ * @param mode - 'Recursive Run' includes subfolders; 'Run' covers only the folder itself
+ * @returns The button locator
+ */
+export const folderRunButton = (modal: Locator, mode: FolderRunMode): Locator =>
+  modal.getByRole('button', { name: mode, exact: true });
+
+/**
+ * Locates the label above a run button, which reports how many requests that button would run.
+ * The count reflects the runner's tag filters, so it is the cheapest way to assert filtering
+ * without starting a run.
+ * @param modal - The run modal, as returned by `openFolderRunModal`
+ * @param mode - Which of the two run modes to read the count for
+ * @returns The label locator, whose text reads e.g. "Recursive Run(2 requests)"
+ */
+export const folderRunCount = (modal: Locator, mode: FolderRunMode): Locator =>
+  modal.getByTestId(FOLDER_RUN_COUNT_TEST_IDS[mode]);
+
+export type FolderRunMode = 'Run' | 'Recursive Run';
+
+const FOLDER_RUN_COUNT_TEST_IDS: Record<FolderRunMode, string> = {
+  'Run': 'folder-run-count',
+  'Recursive Run': 'folder-recursive-run-count'
+};
+
+/**
+ * Dismisses the folder run modal without running, and does nothing if none is open.
+ * @param page - The Playwright page object
+ * @returns void
+ */
+export const dismissFolderRunModal = async (page: Page) => {
+  const modal = page.locator('.bruno-modal').first();
+  if (!(await modal.isVisible())) {
+    return;
   }
 
-  // Now wait for and click Run Collection button
-  await runCollectionButton.waitFor({ state: 'visible', timeout: 10000 });
-  await runCollectionButton.click();
+  await test.step('Dismiss the folder run modal', async () => {
+    await modal.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await expect(modal).toBeHidden();
+  });
+};
 
-  // Wait for the run to complete
-  await page.getByRole('button', { name: 'Run Again' }).waitFor({ timeout: 2 * 60 * 1000 });
+/**
+ * Runs a specific folder within a collection by navigating to it in the sidebar,
+ * opening its context menu, and clicking "Run" followed by "Recursive Run".
+ * Waits for the run to finish.
+ * @param page - The Playwright page object
+ * @param collectionName - The name of the collection containing the folder
+ * @param folderPath - Array of folder names forming the path (e.g. ['scripting', 'api', 'bru', 'cookies'])
+ * @returns void
+ */
+export const runFolder = async (page: Page, collectionName: string, folderPath: string[]) => {
+  await test.step(`Run folder "${folderPath.join('/')}" in "${collectionName}"`, async () => {
+    const modal = await openFolderRunModal(page, collectionName, folderPath);
+    await folderRunButton(modal, 'Recursive Run').click();
+
+    // Wait for the run to complete
+    const runnerLocators = buildRunnerLocators(page);
+    await runnerLocators.runAgainButton().waitFor({ timeout: 2 * 60 * 1000 });
+  });
 };
 
 /**
@@ -71,91 +398,41 @@ export const runCollection = async (page: Page, collectionName: string) => {
  * @returns void
  */
 export const setSandboxMode = async (page: Page, collectionName: string, mode: 'developer' | 'safe') => {
-  // Click on the collection name - try sidebar first, then fall back to collection tab/name
-  // First try sidebar collection name (more reliable)
-  const sidebarCollection = page.locator('#sidebar-collection-name').filter({ hasText: collectionName });
-  const sidebarExists = await sidebarCollection.count().then((count) => count > 0).catch(() => false);
+  await test.step(`Set sandbox mode to "${mode}" for "${collectionName}"`, async () => {
+    const sandboxLocators = buildSandboxLocators(page);
 
-  if (sidebarExists) {
+    // Click on the collection name in the sidebar
+    const sidebarCollection = page.getByTestId('collections').locator('#sidebar-collection-name').filter({ hasText: collectionName }).first();
+    await sidebarCollection.waitFor({ state: 'visible' });
     await sidebarCollection.click();
-  } else {
-    // Fall back to collection by title or text
-    const collectionByTitle = page.getByTitle(collectionName);
-    const collectionByText = page.getByText(collectionName);
-    const titleExists = await collectionByTitle.count().then((count) => count > 0).catch(() => false);
-    if (titleExists) {
-      await collectionByTitle.click();
+
+    // Check if there's already a mode selected - if so, we need to click the badge to open settings tab
+    const sandboxBadgeVisible = await sandboxLocators.sandboxModeSelector().isVisible().catch(() => false);
+    // If a badge exists, click it to open the security settings tab
+    if (sandboxBadgeVisible) {
+      await sandboxLocators.sandboxModeSelector().click();
+
+      // Wait for the security settings tab to be active
+      await sandboxLocators.jsSandboxHeading().waitFor({ state: 'visible', timeout: 10000 });
+    }
+    // If no badge exists, the modal should have appeared automatically (first time selection)
+
+    // Wait for security settings form to be visible - wait for either radio button
+    await Promise.race([
+      sandboxLocators.safeModeRadio().waitFor({ state: 'visible', timeout: 10000 }).catch(() => {}),
+      sandboxLocators.developerModeRadio().waitFor({ state: 'visible', timeout: 10000 }).catch(() => {})
+    ]);
+
+    if (mode === 'developer') {
+      await sandboxLocators.developerModeRadio().waitFor({ state: 'visible', timeout: 5000 });
+      await sandboxLocators.developerModeRadio().click();
     } else {
-      await collectionByText.click();
-    }
-  }
-
-  // Wait a moment for the UI to load
-  await page.waitForTimeout(300);
-
-  // Check if there's already a mode selected - if so, we need to click the badge to open settings tab
-  // Look for the Developer Mode or Safe Mode badge/button
-  const developerModeBadge = page.locator('.developer-mode').filter({ hasText: 'Developer Mode' });
-  const safeModeBadge = page.locator('.safe-mode').filter({ hasText: 'Safe Mode' });
-
-  const developerBadgeExists = await developerModeBadge.count().then((count) => count > 0).catch(() => false);
-  const safeBadgeExists = await safeModeBadge.count().then((count) => count > 0).catch(() => false);
-
-  // If a badge exists, click it to open the security settings tab
-  if (developerBadgeExists || safeBadgeExists) {
-    // Click the appropriate badge to open the security settings tab
-    if (developerBadgeExists) {
-      await developerModeBadge.click();
-    } else {
-      await safeModeBadge.click();
+      await sandboxLocators.safeModeRadio().waitFor({ state: 'visible', timeout: 5000 });
+      await sandboxLocators.safeModeRadio().click();
     }
 
-    // Wait for the security settings tab to be active and form to be visible
-    // Look for the security settings content - it should have "JavaScript Sandbox" heading
-    await page.getByText('JavaScript Sandbox').waitFor({ state: 'visible', timeout: 10000 });
-    await page.waitForTimeout(300);
-  }
-  // If no badge exists, the modal should have appeared automatically (first time selection)
-
-  // Wait for security settings form to be visible - wait for either radio button
-  // These should be in the active tab (either modal or tab)
-  const safeModeRadio = page.getByLabel('Safe Mode');
-  const developerRadio = page.getByLabel('Developer Mode(use only if');
-
-  // Wait for at least one of them to be visible
-  await Promise.race([
-    safeModeRadio.waitFor({ state: 'visible', timeout: 10000 }).catch(() => {}),
-    developerRadio.waitFor({ state: 'visible', timeout: 10000 }).catch(() => {})
-  ]);
-
-  // Additional wait to ensure UI is stable
-  await page.waitForTimeout(300);
-
-  if (mode === 'developer') {
-    await developerRadio.waitFor({ state: 'visible', timeout: 5000 });
-    await developerRadio.check();
-  } else {
-    // For safe mode, check if developer mode is currently selected
-    const developerModeChecked = await developerRadio.isChecked().catch(() => false);
-
-    if (developerModeChecked) {
-      // Click the Developer Mode label text inside the security settings form
-      // Scope to the form container to avoid clicking the badge
-      // The form should have the "JavaScript Sandbox" heading, so scope to that container
-      const securityForm = page.locator('div').filter({ hasText: 'JavaScript Sandbox' }).locator('..').first();
-      const developerLabel = securityForm.locator('label').filter({ hasText: /^Developer Mode/ }).first();
-      await developerLabel.waitFor({ state: 'visible', timeout: 5000 });
-      await developerLabel.click();
-      // Wait for UI to update
-      await page.waitForTimeout(300);
-    }
-
-    // Ensure Safe Mode radio is visible and check it
-    await safeModeRadio.waitFor({ state: 'visible', timeout: 5000 });
-    await safeModeRadio.check();
-  }
-
-  await page.getByRole('button', { name: 'Save' }).click();
+    await page.keyboard.press('Escape');
+  });
 };
 
 /**

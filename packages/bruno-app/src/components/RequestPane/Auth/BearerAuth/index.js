@@ -9,17 +9,17 @@ import { updateAuth } from 'providers/ReduxStore/slices/collections';
 import { sendRequest, saveRequest } from 'providers/ReduxStore/slices/collections/actions';
 import StyledWrapper from './StyledWrapper';
 
-const BearerAuth = ({ item, collection, updateAuth, request, save }) => {
+const BearerAuth = ({ item, collection, updateAuth, request, save, disabled }) => {
   const dispatch = useDispatch();
   const { storedTheme } = useTheme();
 
   // Use the request prop directly like OAuth2ClientCredentials does
   const bearerToken = get(request, 'auth.bearer.token', '');
   const { isSensitive } = useDetectSensitiveField(collection);
-  const { showWarning, warningMessage } = isSensitive(bearerToken);
+  const { showWarning, warningMessage } = isSensitive(bearerToken, item);
 
   const handleRun = () => dispatch(sendRequest(item, collection.uid));
-  
+
   const handleSave = () => {
     save();
   };
@@ -38,8 +38,8 @@ const BearerAuth = ({ item, collection, updateAuth, request, save }) => {
   };
 
   return (
-    <StyledWrapper className="mt-2 w-full">
-      <label className="block font-medium mb-2">Token</label>
+    <StyledWrapper className="w-full">
+      <label className="block mb-1">Token</label>
       <div className="single-line-editor-wrapper flex items-center">
         <SingleLineEditor
           value={bearerToken}
@@ -50,6 +50,8 @@ const BearerAuth = ({ item, collection, updateAuth, request, save }) => {
           collection={collection}
           item={item}
           isSecret={true}
+          readOnly={disabled}
+          isCompact
         />
         {showWarning && <SensitiveFieldWarning fieldName="bearer-token" warningMessage={warningMessage} />}
       </div>

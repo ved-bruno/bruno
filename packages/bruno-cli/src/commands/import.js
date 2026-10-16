@@ -1,14 +1,20 @@
 const fs = require('fs');
 const path = require('path');
+const { pathToFileURL, fileURLToPath } = require('url');
 const chalk = require('chalk');
 const jsyaml = require('js-yaml');
 const axios = require('axios');
 const { openApiToBruno, wsdlToBruno } = require('@usebruno/converters');
-const { exists, isDirectory, sanitizeName } = require('../utils/filesystem');
+const { exists, isDirectory, sanitizeName, canonicalPath } = require('../utils/filesystem');
 const { createCollectionFromBrunoObject } = require('../utils/collection');
 
 const command = 'import <type>';
 const desc = 'Import a collection from other formats';
+
+const COLLECTION_FORMATS = ['bru', 'opencollection'];
+
+const WSDL_MAX_SCHEMA_FILE_SIZE = 10 * 1024 * 1024;
+const WSDL_SCHEMA_EXTENSIONS = ['.xsd', '.wsdl'];
 
 const builder = (yargs) => {
   yargs
@@ -40,6 +46,12 @@ const builder = (yargs) => {
       describe: 'Name for the imported collection',
       type: 'string'
     })
+    .option('collection-format', {
+      describe: 'Format of the imported collection (bru or opencollection). If not specified, the default is `opencollection`',
+      type: 'string',
+      choices: COLLECTION_FORMATS,
+      default: 'opencollection'
+    })
     .option('insecure', {
       type: 'boolean',
       describe: 'Skip SSL certificate verification when fetching from URLs',
@@ -66,7 +78,8 @@ const builder = (yargs) => {
 
 const isUrl = (str) => {
   try {
-    return Boolean(new URL(str));
+    const url = new URL(str);
+    return url.protocol === 'http:' || url.protocol === 'https:';
   } catch (error) {
     return false;
   }
@@ -75,7 +88,7 @@ const isUrl = (str) => {
 const readOpenApiFile = async (source, options = {}) => {
   try {
     let content;
-    
+
     if (isUrl(source)) {
       // Handle URL input
       console.log(chalk.yellow(`Fetching specification from URL: ${source}`));
@@ -83,22 +96,22 @@ const readOpenApiFile = async (source, options = {}) => {
         const axiosOptions = {
           timeout: 30000, // 30 second timeout
           maxContentLength: 10 * 1024 * 1024,
-          validateStatus: status => status >= 200 && status < 300 
+          validateStatus: (status) => status >= 200 && status < 300
         };
-        
+
         // Skip SSL certificate validation if insecure flag is set
         if (options.insecure) {
           console.log(chalk.yellow('Warning: SSL certificate verification is disabled. Use with caution.'));
           axiosOptions.httpsAgent = new (require('https')).Agent({ rejectUnauthorized: false });
         }
-        
+
         const response = await axios.get(source, axiosOptions);
         content = response.data;
       } catch (error) {
         if (error.code === 'ECONNABORTED') {
           throw new Error('Request timed out. The server took too long to respond.');
-        } else if (error.code === 'CERT_HAS_EXPIRED' || error.code === 'DEPTH_ZERO_SELF_SIGNED_CERT' || 
-                   error.code === 'ERR_TLS_CERT_ALTNAME_INVALID') {
+        } else if (error.code === 'CERT_HAS_EXPIRED' || error.code === 'DEPTH_ZERO_SELF_SIGNED_CERT'
+          || error.code === 'ERR_TLS_CERT_ALTNAME_INVALID') {
           throw new Error(`SSL Certificate error: ${error.code}. Try using --insecure if you trust this source.`);
         } else if (error.response) {
           throw new Error(`Failed to fetch from URL: ${error.response.status} ${error.response.statusText}`);
@@ -108,7 +121,7 @@ const readOpenApiFile = async (source, options = {}) => {
           throw new Error(`Error fetching URL: ${error.message}`);
         }
       }
-      
+
       // If response is already an object, return it directly
       if (typeof content === 'object' && content !== null) {
         return content;
@@ -120,7 +133,7 @@ const readOpenApiFile = async (source, options = {}) => {
       }
       content = fs.readFileSync(source, 'utf8');
     }
-    
+
     // If content is a string, try to parse as JSON or YAML
     if (typeof content === 'string') {
       try {
@@ -133,7 +146,7 @@ const readOpenApiFile = async (source, options = {}) => {
         }
       }
     }
-    
+
     return content;
   } catch (error) {
     // Let the specific error handling from above propagate
@@ -197,9 +210,44 @@ const readWSDLFile = async (source, options = {}) => {
   }
 };
 
+const resolveLocalWsdlSchemaRef = async (baseUri, ref) => {
+  if (typeof baseUri !== 'string' || !baseUri.length) {
+    throw new Error('Invalid base URI for schema resolution');
+  }
+  if (typeof ref !== 'string' || !ref.length) {
+    throw new Error('Invalid schema reference');
+  }
+
+  const base = path.isAbsolute(baseUri) ? pathToFileURL(baseUri) : new URL(baseUri);
+  const target = new URL(ref, base);
+
+  if (target.protocol !== 'file:' || target.host !== base.host) {
+    throw new Error(`Remote schema references are not supported (${ref})`);
+  }
+
+  const targetPath = fileURLToPath(target);
+  if (!WSDL_SCHEMA_EXTENSIONS.includes(path.extname(targetPath).toLowerCase())) {
+    throw new Error(`Schema references must point at a ${WSDL_SCHEMA_EXTENSIONS.join('/')} file (${ref})`);
+  }
+
+  const stats = fs.statSync(targetPath);
+  if (!stats.isFile()) {
+    throw new Error(`Schema reference is not a file: ${targetPath}`);
+  }
+  if (stats.size > WSDL_MAX_SCHEMA_FILE_SIZE) {
+    throw new Error(`Schema file exceeds the ${WSDL_MAX_SCHEMA_FILE_SIZE / (1024 * 1024)}MB limit: ${targetPath}`);
+  }
+
+  return {
+    text: fs.readFileSync(targetPath, 'utf8'),
+    uri: target.href,
+    key: pathToFileURL(canonicalPath(targetPath)).href
+  };
+};
+
 const handler = async (argv) => {
   try {
-    const { type, source, output, outputFile, collectionName, insecure, groupBy } = argv;
+    const { type, source, output, collectionFormat, outputFile, collectionName, insecure, groupBy } = argv;
 
     if (!type || !['openapi', 'wsdl'].includes(type)) {
       console.error(chalk.red('Only OpenAPI and WSDL imports are supported currently'));
@@ -245,9 +293,12 @@ const handler = async (argv) => {
       console.log(chalk.yellow('Converting WSDL to Bruno format...'));
 
       // Convert WSDL to Bruno format
-      brunoCollection = await wsdlToBruno(wsdlContent);
+      const wsdlImportOptions = isUrl(source)
+        ? {}
+        : { uri: path.resolve(source), resolve: resolveLocalWsdlSchemaRef };
+      brunoCollection = await wsdlToBruno(wsdlContent, wsdlImportOptions);
     }
-    
+
     // Override collection name if provided
     if (collectionName) {
       brunoCollection.name = collectionName;
@@ -260,17 +311,17 @@ const handler = async (argv) => {
       console.log(chalk.green(`Bruno collection saved as JSON to ${outputPath}`));
     } else if (output) {
       const resolvedOutput = path.resolve(output);
-      
+
       // Check if output is an existing directory
       const isOutputDirectory = await exists(resolvedOutput) && isDirectory(resolvedOutput);
-      
+
       // Determine the final output directory
       let outputDir;
       if (isOutputDirectory) {
         // If output is an existing directory, use collection name to create a subdirectory
         const dirName = sanitizeName(brunoCollection.name);
         outputDir = path.join(resolvedOutput, dirName);
-        
+
         // Check if this subfolder already exists
         if (await exists(outputDir)) {
           const dirContents = fs.readdirSync(outputDir);
@@ -285,18 +336,20 @@ const handler = async (argv) => {
       } else {
         // If output doesn't exist or is not a directory, use it directly
         outputDir = resolvedOutput;
-        
+
         // Check if parent directory exists
         const parentDir = path.dirname(outputDir);
         if (!await exists(parentDir)) {
           console.error(chalk.red(`Parent directory does not exist: ${parentDir}`));
           process.exit(1);
         }
-        
+
         fs.mkdirSync(outputDir, { recursive: true });
       }
 
-      await createCollectionFromBrunoObject(brunoCollection, outputDir);
+      await createCollectionFromBrunoObject(brunoCollection, outputDir, {
+        format: collectionFormat === 'opencollection' ? 'yml' : 'bru'
+      });
       console.log(chalk.green(`Bruno collection created at ${outputDir}`));
     }
   } catch (error) {
@@ -312,5 +365,6 @@ module.exports = {
   handler,
   isUrl,
   readOpenApiFile,
-  readWSDLFile
-}; 
+  readWSDLFile,
+  resolveLocalWsdlSchemaRef
+};

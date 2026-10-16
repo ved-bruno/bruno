@@ -3,7 +3,7 @@
 
 ### Bruno - IDE de código abierto para explorar y probar APIs.
 
-[![Versión en Github](https://badge.fury.io/gh/usebruno%2Fbruno.svg)](https://badge.fury.io/gh/usebruno%bruno)
+[![Versión en Github](https://badge.fury.io/gh/usebruno%2Fbruno.svg)](https://badge.fury.io/gh/usebruno%2Fbruno)
 [![CI](https://github.com/usebruno/bruno/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/usebruno/bruno/actions/workflows/tests.yml)
 [![Actividad de Commits](https://img.shields.io/github/commit-activity/m/usebruno/bruno)](https://github.com/usebruno/bruno/pulse)
 [![X](https://img.shields.io/twitter/follow/use_bruno?style=social&logo=x)](https://twitter.com/use_bruno)
@@ -28,6 +28,7 @@
 | [العربية](./readme_ar.md)
 | [日本語](./readme_ja.md)
 | [ქართული](./readme_ka.md)
+| [हिन्दी](./readme_hi.md)
 
 Bruno es un cliente de APIs nuevo e innovador, creado con el objetivo de revolucionar el panorama actual representado por Postman y otras herramientas similares.
 

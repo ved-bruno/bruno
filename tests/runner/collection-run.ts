@@ -1,5 +1,5 @@
-import { test } from '../../playwright';
-import { setSandboxMode, runCollection, validateRunnerResults } from '../utils/page/index';
+import { test, expect } from '../../playwright';
+import { setSandboxMode, runCollection, validateRunnerResults, getRunnerResultCounts } from '../utils/page/index';
 
 test.describe.parallel('Collection Run', () => {
   test('Run bruno-testbench in Developer Mode', async ({ pageWithUserData: page }) => {
@@ -25,19 +25,17 @@ test.describe.parallel('Collection Run', () => {
     test.setTimeout(2 * 60 * 1000);
 
     await page.getByText('bruno-testbench').click();
-    await page.getByLabel('Safe Mode').check();
-    await page.getByRole('button', { name: 'Save' }).click();
     await page.locator('.environment-selector').nth(1).click();
     await page.locator('.dropdown-item').getByText('Prod').click();
-    const collectionContainer = page.locator('.collection-name').filter({ hasText: 'bruno-testbench' });
-    await collectionContainer.locator('.collection-actions').hover();
+    const collectionContainer = page.getByTestId('collections').locator('.collection-name').filter({ hasText: 'bruno-testbench' });
+    await collectionContainer.hover();
     await collectionContainer.locator('.collection-actions .icon').waitFor({ state: 'visible' });
     await collectionContainer.locator('.collection-actions .icon').click();
     await page.getByText('Run', { exact: true }).click();
     // Wait for the runner tab to open
     // If there are existing results, reset first, otherwise wait for Run Collection button
     const resetButton = page.getByRole('button', { name: 'Reset' });
-    const runCollectionButton = page.getByRole('button', { name: 'Run Collection' });
+    const runCollectionButton = page.getByTestId('runner-run-button');
 
     // Check if Reset button is visible (means there are existing results)
     const resetVisible = await resetButton.isVisible().catch(() => false);
@@ -52,16 +50,8 @@ test.describe.parallel('Collection Run', () => {
     await runCollectionButton.click();
     await page.getByRole('button', { name: 'Run Again' }).waitFor({ timeout: 2 * 60 * 1000 });
 
-    // Parse and validate test results from filter buttons
-    const allButton = page.locator('button').filter({ hasText: /^All/ });
-    const passedButton = page.locator('button').filter({ hasText: /^Passed/ });
-    const failedButton = page.locator('button').filter({ hasText: /^Failed/ });
-    const skippedButton = page.locator('button').filter({ hasText: /^Skipped/ });
-
-    const totalRequests = parseInt(await allButton.locator('span').innerText());
-    const passed = parseInt(await passedButton.locator('span').innerText());
-    const failed = parseInt(await failedButton.locator('span').innerText());
-    const skipped = parseInt(await skippedButton.locator('span').innerText());
+    // Parse and validate test results from the filter counts
+    const { totalRequests, passed, failed, skipped } = await getRunnerResultCounts(page);
 
     await expect(failed).toBe(0);
     await expect(passed).toBe(totalRequests - skipped - failed);

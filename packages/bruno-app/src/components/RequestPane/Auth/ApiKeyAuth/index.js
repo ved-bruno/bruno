@@ -5,27 +5,31 @@ import { IconCaretDown } from '@tabler/icons';
 import Dropdown from 'components/Dropdown';
 import { useTheme } from 'providers/Theme';
 import SingleLineEditor from 'components/SingleLineEditor';
+import SensitiveFieldWarning from 'components/SensitiveFieldWarning';
+import { useDetectSensitiveField } from 'hooks/useDetectSensitiveField';
 import { sendRequest } from 'providers/ReduxStore/slices/collections/actions';
 import StyledWrapper from './StyledWrapper';
 import { humanizeRequestAPIKeyPlacement } from 'utils/collections';
 
-const ApiKeyAuth = ({ item, collection, updateAuth, request, save }) => {
+const ApiKeyAuth = ({ item, collection, updateAuth, request, save, disabled }) => {
   const dispatch = useDispatch();
   const { storedTheme } = useTheme();
   const dropdownTippyRef = useRef();
   const onDropdownCreate = (ref) => (dropdownTippyRef.current = ref);
 
   const apikeyAuth = get(request, 'auth.apikey', {});
+  const { isSensitive } = useDetectSensitiveField(collection);
+  const apiKeyValueSensitive = isSensitive(apikeyAuth.value, item);
 
   const handleRun = () => dispatch(sendRequest(item, collection.uid));
-  
+
   const handleSave = () => {
     save();
   };
 
   const Icon = forwardRef((props, ref) => {
     return (
-      <div ref={ref} className="flex items-center justify-end auth-type-label select-none">
+      <div ref={ref} data-testid="auth-placement-label" className="flex items-center justify-end auth-type-label select-none">
         {humanizeRequestAPIKeyPlacement(apikeyAuth?.placement)}
         <IconCaretDown className="caret ml-1 mr-1" size={14} strokeWidth={2} />
       </div>
@@ -33,6 +37,9 @@ const ApiKeyAuth = ({ item, collection, updateAuth, request, save }) => {
   });
 
   const handleAuthChange = (property, value) => {
+    if (disabled) {
+      return;
+    }
     dispatch(
       updateAuth({
         mode: 'apikey',
@@ -47,23 +54,24 @@ const ApiKeyAuth = ({ item, collection, updateAuth, request, save }) => {
   };
 
   useEffect(() => {
-    !apikeyAuth?.placement &&
-      dispatch(
-        updateAuth({
-          mode: 'apikey',
-          collectionUid: collection.uid,
-          itemUid: item.uid,
-          content: {
-            placement: 'header'
-          }
-        })
-      );
-  }, [apikeyAuth]);
+    !disabled
+    && !apikeyAuth?.placement
+    && dispatch(
+      updateAuth({
+        mode: 'apikey',
+        collectionUid: collection.uid,
+        itemUid: item.uid,
+        content: {
+          placement: 'header'
+        }
+      })
+    );
+  }, [apikeyAuth, disabled]);
 
   return (
-    <StyledWrapper className="mt-2 w-full">
-      <label className="block font-medium mb-2">Key</label>
-      <div className="single-line-editor-wrapper mb-2">
+    <StyledWrapper className="w-full">
+      <label className="block mb-1">Key</label>
+      <div className="single-line-editor-wrapper mb-3">
         <SingleLineEditor
           value={apikeyAuth.key || ''}
           theme={storedTheme}
@@ -71,11 +79,14 @@ const ApiKeyAuth = ({ item, collection, updateAuth, request, save }) => {
           onChange={(val) => handleAuthChange('key', val)}
           onRun={handleRun}
           collection={collection}
+          item={item}
+          readOnly={disabled}
+          isCompact
         />
       </div>
 
-      <label className="block font-medium mb-2">Value</label>
-      <div className="single-line-editor-wrapper mb-2">
+      <label className="block mb-1">Value</label>
+      <div className="single-line-editor-wrapper mb-3 flex items-center">
         <SingleLineEditor
           value={apikeyAuth.value || ''}
           theme={storedTheme}
@@ -83,11 +94,18 @@ const ApiKeyAuth = ({ item, collection, updateAuth, request, save }) => {
           onChange={(val) => handleAuthChange('value', val)}
           onRun={handleRun}
           collection={collection}
+          item={item}
+          isSecret={true}
+          isCompact
+          readOnly={disabled}
         />
+        {apiKeyValueSensitive.showWarning && (
+          <SensitiveFieldWarning fieldName="apikey-value" warningMessage={apiKeyValueSensitive.warningMessage} />
+        )}
       </div>
 
-      <label className="block font-medium mb-2">Add To</label>
-      <div className="inline-flex items-center cursor-pointer auth-placement-selector w-fit">
+      <label className="block mb-1">Add To</label>
+      <div data-testid="auth-placement-selector" className="inline-flex items-center cursor-pointer auth-placement-selector w-fit">
         <Dropdown onCreate={onDropdownCreate} icon={<Icon />} placement="bottom-end">
           <div
             className="dropdown-item"

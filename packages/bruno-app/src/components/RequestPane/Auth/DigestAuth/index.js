@@ -8,16 +8,16 @@ import SingleLineEditor from 'components/SingleLineEditor';
 import { sendRequest, saveRequest } from 'providers/ReduxStore/slices/collections/actions';
 import StyledWrapper from './StyledWrapper';
 
-const DigestAuth = ({ item, collection, updateAuth, request, save }) => {
+const DigestAuth = ({ item, collection, updateAuth, request, save, disabled }) => {
   const dispatch = useDispatch();
   const { storedTheme } = useTheme();
 
   const digestAuth = get(request, 'auth.digest', {});
   const { isSensitive } = useDetectSensitiveField(collection);
-  const { showWarning, warningMessage } = isSensitive(digestAuth?.password);
+  const { showWarning, warningMessage } = isSensitive(digestAuth?.password, item);
 
   const handleRun = () => dispatch(sendRequest(item, collection.uid));
-  
+
   const handleSave = () => {
     save();
   };
@@ -52,8 +52,8 @@ const DigestAuth = ({ item, collection, updateAuth, request, save }) => {
 
   return (
     <StyledWrapper className="mt-2 w-full">
-      <label className="block font-medium mb-2">Username</label>
-      <div className="single-line-editor-wrapper mb-2">
+      <label className="block mb-1">Username</label>
+      <div className="single-line-editor-wrapper mb-3">
         <SingleLineEditor
           value={digestAuth.username || ''}
           theme={storedTheme}
@@ -62,10 +62,12 @@ const DigestAuth = ({ item, collection, updateAuth, request, save }) => {
           onRun={handleRun}
           collection={collection}
           item={item}
+          readOnly={disabled}
+          isCompact
         />
       </div>
 
-      <label className="block font-medium mb-2">Password</label>
+      <label className="block mb-1">Password</label>
       <div className="single-line-editor-wrapper flex items-center">
         <SingleLineEditor
           value={digestAuth.password || ''}
@@ -76,6 +78,8 @@ const DigestAuth = ({ item, collection, updateAuth, request, save }) => {
           collection={collection}
           item={item}
           isSecret={true}
+          readOnly={disabled}
+          isCompact
         />
         {showWarning && <SensitiveFieldWarning fieldName="digest-password" warningMessage={warningMessage} />}
       </div>

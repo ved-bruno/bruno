@@ -25,7 +25,7 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - uses: actions/setup-node@v5
         with:
           node-version-file: '.nvmrc'
@@ -38,12 +38,13 @@ jobs:
 
       - name: Run tests
         run: |
+          npm install --prefix packages/bruno-tests/additional-context-root-lib
           cd packages/bruno-tests/collection
           npm install
-          bru run --env Prod --output junit.xml --format junit
+          bru run --env Prod --output junit.xml --format junit --sandbox developer
 
       - name: Publish Test Report
-        uses: dorny/test-reporter@v2
+        uses: dorny/test-reporter@v3
         if: success() || failure()
         with:
           name: Test Report
